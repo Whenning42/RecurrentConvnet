@@ -9,6 +9,8 @@ from torch.optim.lr_scheduler import StepLR
 
 MNIST_ROOT = "/home/william/Datasets"
 
+torch.autograd.set_detect_anomaly(True)
+
 ## FLOW
 #
 # Given an input image, run a recurrent network to try to transform the image to the image
@@ -80,6 +82,7 @@ class ConvStack(nn.Module):
         super(ConvStack, self).__init__()
         self.conv0 = nn.Conv2d(mutable_channels + constant_channels, mutable_channels, 3, 1, padding = 1)
         self.conv1 = nn.Conv2d(mutable_channels + constant_channels, mutable_channels, 3, 1, padding = 1)
+        self.conv2 = nn.Conv2d(mutable_channels + constant_channels, mutable_channels, 3, 1, padding = 1)
         self.constant_channels = constant_channels
 
     def forward(self, x):
@@ -87,9 +90,11 @@ class ConvStack(nn.Module):
         out_0 = F.relu(self.conv0(x))
         in_1 = torch.cat((constant_input, out_0), 1)
         out_1 = F.relu(self.conv1(in_1))
-        return torch.cat((constant_input, out_1), 1)
+        in_2 = torch.cat((constant_input, out_1), 1)
+        out_2 = F.relu(self.conv2(in_2))
+        return torch.cat((constant_input, out_2), 1)
 
-W = 64
+W = 24
 CLASSES = 10
 import numpy as np
 class Net(nn.Module):
@@ -107,25 +112,38 @@ class Net(nn.Module):
 
         # Need to double check this performs Hadamard(attention, x, ("width", "height"))
         new_x = torch.tanh(self.W_new_x(attention * x))
-        keep = np.s_[:, 0 : CLASSES + 1, :, :]
-        new_x[keep] = x[keep]
+        # keep = np.s_[:, 0 : CLASSES + 1, :, :]
+        keep = np.s_[:, 0 : 1, :, :]
+        # new_x[keep] = x[keep]
         return update * x + (1 - update) * new_x
 
-def train(args, model, device, train_loader, optimizer, epoch):
+STEPS = 6
+def train(model, device, train_loader, optimizer, epoch, exemplars, f):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
-        output = model(data)
-        loss = F.nll_loss(output, target)
-        loss.backward()
+
+        x = torch.zeros(data.shape[0], 1 + 2 * CLASSES + W, 28, 28).to(device)
+        x[:, 0:1] = data.to(device)
+        # x[:, 1:11] = exemplars.to(device)
+        for t in range(STEPS):
+            x = model(x)
+
+            classification_pixels = x[:, 1 + CLASSES : 1 + CLASSES + CLASSES]
+            softmax_normalization = 1/10
+            classifications = F.log_softmax(torch.sum(classification_pixels, (-1, -2)) * \
+                                            softmax_normalization)
+            loss = F.nll_loss(classifications, target)
+            loss.backward(retain_graph = True)
+            Draw(f, x[0].detach(), t)
+
         optimizer.step()
-        if batch_idx % args.log_interval == 0:
+
+        if batch_idx % 1 == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
-            if args.dry_run:
-                break
 
 def test(model, device, test_loader):
     model.eval()
@@ -185,7 +203,7 @@ def Draw(f, images, title):
     axes.imshow(composite.numpy(), cmap='gray', interpolation='none')
 
     plt.draw()
-    plt.pause(.2)
+    plt.pause(.001)
     f.clf()
 
 def main():
@@ -194,7 +212,7 @@ def main():
 
     dataset1 = datasets.MNIST(MNIST_ROOT, train=True, download=True, transform = transforms.ToTensor())
     dataset2 = datasets.MNIST(MNIST_ROOT, train=False, transform = transforms.ToTensor())
-    train_loader = torch.utils.data.DataLoader(dataset1)
+    train_loader = torch.utils.data.DataLoader(dataset1, batch_size = 32)
     test_loader = torch.utils.data.DataLoader(dataset2)
 
     exemplars = GetExemplars(train_loader).to(device)
@@ -210,35 +228,12 @@ def main():
 
     f = plt.figure()
 
-    optimizer = optim.SGD(model.parameters(), lr = .001, momentum = .9)
-
-    for ex in range(10):
-
-        x = torch.zeros(1, 1 + 2 * CLASSES + W, 28, 28).to(device)
-        x[0][0] = exemplars[ex].to(device)
-        x[0][1:11] = exemplars.to(device)
-
-        for i in range(10):
-            x = model(x).detach()
-            classification_pixels = x[0][1 + CLASSES : 1 + CLASSES + CLASSES]
-            for w in range(10):
-                # Sum over the width and height pixels.
-                # The constant 200 here is a softmax temperature used to normalize this.
-                softmax_normalization = 1/200
-                classifications = F.softmax(torch.sum(classification_pixels, (-1, -2)) * \
-                                            softmax_normalization)
-                print("Weight", w, classifications[w])
-            Draw(f, x[0], i)
-
+    optimizer = optim.SGD(model.parameters(), lr = .0001, momentum = .9)
     scheduler = StepLR(optimizer, step_size=1, gamma=.1)
-    for epoch in range(1, args.epochs + 1):
-        train(model, device, train_loader, optimizer, epoch)
-        test(model, device, test_loader)
+    for epoch in range(1, 30):
+        train(model, device, train_loader, optimizer, epoch, exemplars, f)
+        # test(model, device, test_loader, exemplars)
         scheduler.step()
-
-    if args.save_model:
-        torch.save(model.state_dict(), "mnist_cnn.pt")
-
 
 if __name__ == '__main__':
     main()
