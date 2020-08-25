@@ -139,21 +139,30 @@ def train(model, device, train_loader, optimizer, epoch, exemplars, f):
         x = x.to(device)
 
         # x[:, 1:11] = exemplars.to(device)
-        for t in range(4 * STEPS):
+        for t in range(8 * STEPS):
             if t % STEPS == 0:
                 x = x.detach()
 
+            x = model(x)
 
             # Manual batch-norm in the classifcation grids prevents pixels from diverging to max
             # color (I think because high values are penalized less for relative uncertainty by
             # cross entropy loss)
-            x = model(x)
-            classification_pixels = x[:, 1 : 1 + CLASSES]
-            background = torch.mean(classification_pixels, (1, 2, 3))
-            background = torch.unsqueeze(background, -1)
-            background = torch.unsqueeze(background, -1)
-            background = torch.unsqueeze(background, -1)
-            classification_pixels -= background
+            # classification_pixels = x[:, 0 : CLASSES]
+            # background = torch.mean(classification_pixels, (1, 2, 3))
+            # background = torch.unsqueeze(background, -1)
+            # background = torch.unsqueeze(background, -1)
+            # background = torch.unsqueeze(background, -1)
+            # classification_pixels -= background
+
+            state_pixels = x
+            per_channel_mean = torch.mean(state_pixels, (0, 2, 3))
+            per_channel_mean = torch.unsqueeze(per_channel_mean, 0)
+            per_channel_mean = torch.unsqueeze(per_channel_mean, -1)
+            per_channel_mean = torch.unsqueeze(per_channel_mean, -1)
+            state_pixels -= per_channel_mean
+
+            classification_pixels = x[:, 0 : CLASSES]
 
             if (t + 1) % STEPS == 0:
                 classifications = F.log_softmax(torch.sum(classification_pixels, (-1, -2)) / 20)
@@ -253,7 +262,7 @@ def main():
     x = exemplars[0]
 
 
-    optimizer = optim.SGD(model.parameters(), lr = .00001, momentum = .99)
+    optimizer = optim.SGD(model.parameters(), lr = .0001, momentum = .99)
     scheduler = StepLR(optimizer, step_size=1, gamma=.1)
     for epoch in range(1, 30):
         train(model, device, train_loader, optimizer, epoch, exemplars, f)
