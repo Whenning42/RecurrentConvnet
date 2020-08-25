@@ -78,65 +78,80 @@ class RNN(nn.Module):
 ## MNIST VV
 
 class ConvStack(nn.Module):
-    def __init__(self, mutable_channels, constant_channels):
+    def __init__(self, state, hidden):
         super(ConvStack, self).__init__()
-        self.conv0 = nn.Conv2d(mutable_channels + constant_channels, mutable_channels, 3, 1, padding = 1)
-        self.conv1 = nn.Conv2d(mutable_channels + constant_channels, mutable_channels, 3, 1, padding = 1)
-        self.conv2 = nn.Conv2d(mutable_channels + constant_channels, mutable_channels, 3, 1, padding = 1)
-        self.constant_channels = constant_channels
+        # 32x32 spatial
+        # 32x32 depth
+        # Relu
+        # 32x128 depth
+
+        # 128x128 spatial
+        # 128x128 depth
+        # Relu
+        # 128x32 depth
+
+        bias = True
+        self.conv0 = nn.Conv2d(state, hidden, 3, padding = 1, groups = state, bias = bias)
+        self.conv1 = nn.Conv2d(hidden, hidden, 1, bias = bias)
+        self.conv2 = nn.Conv2d(hidden, state, 1, groups = state, bias = bias)
+        # torch.nn.init.zeros_(self.conv2.weight)
 
     def forward(self, x):
-        constant_input = x[:, 0:self.constant_channels]
-        out_0 = F.relu(self.conv0(x))
-        in_1 = torch.cat((constant_input, out_0), 1)
-        out_1 = F.relu(self.conv1(in_1))
-        in_2 = torch.cat((constant_input, out_1), 1)
-        out_2 = F.relu(self.conv2(in_2))
-        return torch.cat((constant_input, out_2), 1)
+        return self.conv2(F.elu(self.conv1(self.conv0(x))))
 
-W = 24
+STATE = 64
+HIDDEN = 64
 CLASSES = 10
 import numpy as np
 class Net(nn.Module):
-    def __init__(self, exemplars):
+    def __init__(self, f, exemplars):
         super(Net, self).__init__()
-        conv_params = (W + CLASSES, CLASSES + 1)
+        conv_params = (STATE, HIDDEN)
         self.W_update = ConvStack(*conv_params)
         self.W_attention = ConvStack(*conv_params)
         self.W_new_x = ConvStack(*conv_params)
+        self.f = f
 
     def forward(self, x):
         # This is a GRU.
-        update = torch.sigmoid(self.W_update(x))
-        attention = torch.sigmoid(self.W_attention(x))
+        # update = torch.sigmoid(self.W_update(x))
+        # attention = torch.sigmoid(self.W_attention(x))
+        new_x = torch.tanh(self.W_new_x(x))
 
-        # Need to double check this performs Hadamard(attention, x, ("width", "height"))
-        new_x = torch.tanh(self.W_new_x(attention * x))
         # keep = np.s_[:, 0 : CLASSES + 1, :, :]
         keep = np.s_[:, 0 : 1, :, :]
         # new_x[keep] = x[keep]
-        return update * x + (1 - update) * new_x
+        return torch.tanh((x + .5 * new_x) / 3) * 3
 
-STEPS = 6
+STEPS = 8
 def train(model, device, train_loader, optimizer, epoch, exemplars, f):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
 
-        x = torch.zeros(data.shape[0], 1 + 2 * CLASSES + W, 28, 28).to(device)
-        x[:, 0:1] = data.to(device)
+        x = data.expand(-1, STATE, -1, -1).clone()
+        batch_means = torch.mean(data, (2, 3))
+        batch_means = torch.unsqueeze(batch_means, -1)
+        batch_means = torch.unsqueeze(batch_means, -1)
+        x -= batch_means
+        x = x.to(device)
+
         # x[:, 1:11] = exemplars.to(device)
-        for t in range(STEPS):
+        for t in range(4 * STEPS):
+            if t % STEPS == 0:
+                x = x.detach()
+
             x = model(x)
 
-            classification_pixels = x[:, 1 + CLASSES : 1 + CLASSES + CLASSES]
-            softmax_normalization = 1/10
-            classifications = F.log_softmax(torch.sum(classification_pixels, (-1, -2)) * \
-                                            softmax_normalization)
-            loss = F.nll_loss(classifications, target)
-            loss.backward(retain_graph = True)
-            Draw(f, x[0].detach(), t)
+            if (t + 1) % STEPS == 0:
+                classification_pixels = x[:, 1 : 1 + CLASSES]
+                classifications = F.log_softmax(torch.sum(classification_pixels, (-1, -2)) / 20)
+                loss = F.nll_loss(classifications, target)
+                loss.backward(retain_graph = True)
+
+            if t % 2 == 0:
+                Draw(f, x[0].detach() / 6 + .5, t)
 
         optimizer.step()
 
@@ -169,8 +184,8 @@ import math
 def Draw(f, images, title):
     f.suptitle(title)
 
-    images -= torch.min(images)
-    images /= torch.max(images)
+#    images -= torch.min(images)
+#    images /= torch.max(images)
 
     # This is a subplot based solution. It's really slow.
     # num_images = int(images.shape[0])
@@ -212,7 +227,7 @@ def main():
 
     dataset1 = datasets.MNIST(MNIST_ROOT, train=True, download=True, transform = transforms.ToTensor())
     dataset2 = datasets.MNIST(MNIST_ROOT, train=False, transform = transforms.ToTensor())
-    train_loader = torch.utils.data.DataLoader(dataset1, batch_size = 32)
+    train_loader = torch.utils.data.DataLoader(dataset1, batch_size = 64)
     test_loader = torch.utils.data.DataLoader(dataset2)
 
     exemplars = GetExemplars(train_loader).to(device)
@@ -222,13 +237,13 @@ def main():
     # prediction = CLASSES
     # hidden_state = W
 
-    model = Net(exemplars.to(device)).to(device)
+    f = plt.figure()
+    model = Net(f, exemplars.to(device)).to(device)
 
     x = exemplars[0]
 
-    f = plt.figure()
 
-    optimizer = optim.SGD(model.parameters(), lr = .0001, momentum = .9)
+    optimizer = optim.SGD(model.parameters(), lr = .0001, momentum = .99)
     scheduler = StepLR(optimizer, step_size=1, gamma=.1)
     for epoch in range(1, 30):
         train(model, device, train_loader, optimizer, epoch, exemplars, f)
