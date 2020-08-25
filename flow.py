@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import StepLR
 
 MNIST_ROOT = "/home/william/Datasets"
 
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 ## FLOW
 #
@@ -131,6 +131,10 @@ def train(model, device, train_loader, optimizer, epoch, exemplars, f):
         optimizer.zero_grad()
 
         x = data.expand(-1, STATE, -1, -1).clone()
+
+        # Manual batch-norm in the classifcation grids prevents pixels from diverging to max color
+        # (I think because high values are penalized less for relative uncertainty by cross entropy
+        #  loss)
         batch_means = torch.mean(data, (2, 3))
         batch_means = torch.unsqueeze(batch_means, -1)
         batch_means = torch.unsqueeze(batch_means, -1)
@@ -143,14 +147,19 @@ def train(model, device, train_loader, optimizer, epoch, exemplars, f):
                 x = x.detach()
 
             x = model(x)
+            classification_pixels = x[:, 1 : 1 + CLASSES]
+            background = torch.mean(classification_pixels, (1, 2, 3))
+            background = torch.unsqueeze(background, -1)
+            background = torch.unsqueeze(background, -1)
+            background = torch.unsqueeze(background, -1)
+            classification_pixels -= background
 
             if (t + 1) % STEPS == 0:
-                classification_pixels = x[:, 1 : 1 + CLASSES]
                 classifications = F.log_softmax(torch.sum(classification_pixels, (-1, -2)) / 20)
                 loss = F.nll_loss(classifications, target)
                 loss.backward(retain_graph = True)
 
-            if t % 2 == 0:
+            if t % 4 == 0:
                 Draw(f, x[0].detach() / 6 + .5, t)
 
         optimizer.step()
