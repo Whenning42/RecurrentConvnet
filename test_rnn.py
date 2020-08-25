@@ -1,4 +1,4 @@
-# Test that I understand how unrolling RNN's works in Pytorch
+# Test that I understand how RNNs works in Pytorch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
