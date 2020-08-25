@@ -132,9 +132,6 @@ def train(model, device, train_loader, optimizer, epoch, exemplars, f):
 
         x = data.expand(-1, STATE, -1, -1).clone()
 
-        # Manual batch-norm in the classifcation grids prevents pixels from diverging to max color
-        # (I think because high values are penalized less for relative uncertainty by cross entropy
-        #  loss)
         batch_means = torch.mean(data, (2, 3))
         batch_means = torch.unsqueeze(batch_means, -1)
         batch_means = torch.unsqueeze(batch_means, -1)
@@ -146,6 +143,10 @@ def train(model, device, train_loader, optimizer, epoch, exemplars, f):
             if t % STEPS == 0:
                 x = x.detach()
 
+
+            # Manual batch-norm in the classifcation grids prevents pixels from diverging to max
+            # color (I think because high values are penalized less for relative uncertainty by
+            # cross entropy loss)
             x = model(x)
             classification_pixels = x[:, 1 : 1 + CLASSES]
             background = torch.mean(classification_pixels, (1, 2, 3))
@@ -252,7 +253,7 @@ def main():
     x = exemplars[0]
 
 
-    optimizer = optim.SGD(model.parameters(), lr = .0001, momentum = .99)
+    optimizer = optim.SGD(model.parameters(), lr = .00001, momentum = .99)
     scheduler = StepLR(optimizer, step_size=1, gamma=.1)
     for epoch in range(1, 30):
         train(model, device, train_loader, optimizer, epoch, exemplars, f)
